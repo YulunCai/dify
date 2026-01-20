@@ -1,8 +1,10 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from core.helper.ssrf_proxy import (
+    dify_config,
+    _build_ssrf_client,
     SSRF_DEFAULT_MAX_RETRIES,
     _get_user_provided_host_header,
     make_request,
@@ -33,6 +35,32 @@ def test_retry_exceed_max_retries(mock_get_client):
     with pytest.raises(Exception) as e:
         make_request("GET", "http://example.com", max_retries=SSRF_DEFAULT_MAX_RETRIES - 1)
     assert str(e.value) == f"Reached maximum retries ({SSRF_DEFAULT_MAX_RETRIES - 1}) for URL http://example.com"
+
+
+@pytest.mark.parametrize("verify", [False, True])
+def test_build_ssrf_client_passes_verify_to_proxy_transport(monkeypatch, verify):
+    monkeypatch.setattr(dify_config, "SSRF_PROXY_ALL_URL", None)
+    monkeypatch.setattr(dify_config, "SSRF_PROXY_HTTP_URL", "http://proxy.example.com")
+    monkeypatch.setattr(dify_config, "SSRF_PROXY_HTTPS_URL", "http://proxy.example.com")
+
+    with patch("core.helper.ssrf_proxy.httpx.HTTPTransport", autospec=True) as transport_cls, patch(
+        "core.helper.ssrf_proxy.httpx.Client",
+        autospec=True,
+    ) as client_cls:
+        transport_http = MagicMock()
+        transport_https = MagicMock()
+        transport_cls.side_effect = [transport_http, transport_https]
+        client_cls.return_value = MagicMock()
+
+        _build_ssrf_client(verify=verify)
+
+        assert transport_cls.call_args_list == [
+            call(proxy="http://proxy.example.com", verify=verify),
+            call(proxy="http://proxy.example.com", verify=verify),
+        ]
+        mounts = client_cls.call_args.kwargs["mounts"]
+        assert mounts["http://"] is transport_http
+        assert mounts["https://"] is transport_https
 
 
 class TestGetUserProvidedHostHeader:
